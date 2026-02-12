@@ -17,12 +17,16 @@ CREATE TABLE netflix (
 );
 LOAD DATA INFILE 'C:/ProgramData/MySQL/MySQL Server 8.0/Uploads/netflix_titles.csv'
 INTO TABLE netflix
+CHARACTER SET latin1
 FIELDS TERMINATED BY ',' 
 ENCLOSED BY '"'
 LINES TERMINATED BY '\r\n'
 IGNORE 1 LINES
-(show_id, category, title, director, cast, country, @date_added, release_year, rating, duration, genre, description);
+(@show_id, category, title, director, cast, country, @date_added, release_year, rating, duration, genre, description)
+SET 
+    show_id = @show_id,
+    date_added = STR_TO_DATE(NULLIF(@date_added, ''), '%d/%m/%Y');
 
 
-#select * from netflix;
+select * from netflix;
 
