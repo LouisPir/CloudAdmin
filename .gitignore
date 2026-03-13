@@ -1,1 +1,39 @@
-./data/
+# ── Maven build output (v2 + v3) ─────────────────
+**/target/
+
+# ── Python (v1) ──────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# ── IDE files ────────────────────────────────────
+.idea/
+*.iml
+*.iws
+*.ipr
+.project
+.classpath
+.settings/
+.vscode/
+
+# ── OS files ─────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Java ─────────────────────────────────────────
+*.class
+*.jar
+*.war
+hs_err_pid*
+
+# ── k6 test output (regenerated on every run) ───
+baseline_results.json
+stress_results.json
+
+# ── Logs ─────────────────────────────────────────
+*.log
+spring.log
