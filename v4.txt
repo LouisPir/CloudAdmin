@@ -1,0 +1,31 @@
+Version 4 (Index Optimization & Query Tuning): Technical Details
+
+Architectural Shifts:
+
+Query Strategy Overhaul: Replaced all LIKE '%term%' wildcard filters with exact-match (=) equality checks on category, country, rating, and genre. This shifts the filter endpoint from O(N) full-table scans to O(log N) B-Tree index lookups, allowing MySQL's optimizer to perform direct key seeks instead of reading every row.
+Column Projection: The /shows list endpoint no longer uses SELECT *. A dedicated lightweight query and RowMapper exclude the two largest text columns (description and cast), reducing per-row I/O, heap allocation, and JSON serialization volume by an estimated 60–70%. Detail endpoints (/shows/{id}, /shows/search, /shows/filter) retain the full SELECT * since consumers need the complete record.
+Hybrid Caching Model: Extended the caching architecture with a second, JVM-local layer. Aggregation endpoints remain cached in Redis (via the existing CacheService), but the paginated list endpoint uses an in-process ConcurrentHashMap with a 10-second TTL. This is a deliberate architectural choice: Redis round-trips cost ~10ms (visible in V4 aggregation p50s), which would negate most of the benefit for a query that only takes ~14ms to execute. The local cache delivers sub-2ms responses. The countAll() method receives the same local cache treatment, eliminating a recurring SELECT COUNT(*) full-table scan.
+Schema Evolution: Five new B-Tree indexes (idx_category, idx_country, idx_rating, idx_genre, idx_release_year) complement the existing FULLTEXT index on title, ensuring every filterable field has an indexed access path.
+
+
+Tech Stack & Dependencies:
+
+New Dependency: Added commons-pool2 to the Maven POM. Without this library on the classpath, Spring Data Redis's Lettuce driver silently falls back to a single shared connection, ignoring all pool configuration properties. The version is managed by the Spring Boot BOM.
+Dual RowMapper Pattern: Two static RowMapper<Show> instances coexist — SHOW_MAPPER (full 12-column extraction for detail views) and LIST_MAPPER (10-column extraction with null for cast and description). This avoids conditional column selection at runtime and keeps both query paths allocation-optimal.
+Cache Entry Type Safety: List cache entries use a Java record (CachedList) that pairs the result set with an expiration timestamp, providing compile-time guarantees over the raw Map.Entry pattern.
+
+
+Security & Performance:
+
+Performance (Connection Pool Scaling): HikariCP maximum-pool-size increased from 20 → 80 (with minimum-idle at 40) to eliminate connection pool starvation. At pool size 20, Tomcat worker threads spent more time queuing for a database connection than executing queries. Lettuce Redis connection pooling is also enabled (max-active=80) to prevent the same bottleneck on the cache side.
+Performance (Database Pressure Reduction): The paginated list cache reduces MySQL hits for /shows from ~470 queries/sec to ~0.5 queries/sec (one cache miss per page per 10-second TTL window). Combined with column projection on those rare cache misses, this eliminates the endpoint as a source of buffer pool contention — the root cause of 1,500ms+ tail spikes observed in pre-fix V4.
+Performance (Tail Latency Collapse): List shows p99 is expected to drop from ~850ms to the ~20ms range — roughly a 40x reduction. The spikes were not caused by slow query execution but by I/O contention: 80 concurrent connections all issuing the heaviest query (SELECT * with large text blobs across 20 rows) thrashed the buffer pool. Caching removed the concurrency, and column projection reduced the cost of surviving cache-miss queries.
+Performance (Index-Backed Filtering): Exact-match filters leverage single-column B-Tree indexes, allowing direct key lookups instead of full-table scans. Filter p50 improved from 68ms (V3) to ~13ms (V4), with p99 dropping from 209ms to ~105ms.
+
+
+Scalability:
+
+Horizontal Scaling Consideration: The hybrid cache model creates two consistency profiles. Redis-cached aggregations remain shared across all nodes behind a load balancer — one node's cache miss populates the value for every node. The local list cache is per-node, meaning each instance maintains its own copy. Since the list data is identical across nodes (it's a deterministic paginated query over a shared database), this duplication has no correctness impact, only a marginal increase in cache-miss rate proportional to the number of nodes.
+Observed Trade-off: Higher throughput increases concurrency pressure on the remaining uncached endpoints (/shows/{id}, /shows/search, /shows/filter). Their individual latencies rise as VUs cycle faster and fire more queries per second. This is a net positive: the system performs significantly more total work, and the per-request latency increase reflects denser MySQL utilization rather than degradation.
+Remaining Bottleneck: The /shows/filter endpoint is now the primary tail-latency contributor. Multi-column composite indexes (e.g., (category, country), (category, genre), (country, rating)) would allow MySQL to satisfy the most common filter combinations with a single index scan instead of selecting one single-column index and row-filtering the rest.
+Verdict: This version combines Redis for shared aggregation caching with JVM-local caching for high-frequency list queries, index-backed filtering, and column projection to minimize per-query cost. The result is a system that eliminates unnecessary database work at every layer — fewer queries reach MySQL, and the queries that do are lighter and index-optimized.

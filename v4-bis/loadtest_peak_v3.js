@@ -24,7 +24,7 @@ export const options = {
   scenarios: {
     peak: {
       executor: "constant-vus",
-      vus: 1,
+      vus: 100,
       duration: "2m",
     },
   },

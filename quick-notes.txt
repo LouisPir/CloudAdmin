@@ -1,0 +1,4 @@
+v1 originally was single threaded.
+for the sake of realistic results, threaded was set to True.
+
+v2 and v3 use fulltext index

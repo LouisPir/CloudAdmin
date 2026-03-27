@@ -1,0 +1,23 @@
+Thanks for catching that! The `pom.xml` provides some crucial exact versioning and build tool context. 
+
+I have updated the Tech Stack section below to explicitly include **Java 17**, **Spring Boot 3.2.5**, and **Maven** based on your POM file. The rest of the architectural analysis remains rock solid because the POM confirms exactly the behavior we saw in the Java classes (specifically the web and JDBC starters).
+
+### **Version 2 (Java/Spring Boot Rewrite): Technical Details**
+
+* **Architectural Shifts:**
+    * **Language & Paradigm Shift:** Migrated completely from Python to Java, adopting an N-tier, object-oriented architecture (Controller-Model-Repository pattern).
+    * **Data Access Layer:** Replaced manual cursor management with Spring's `JdbcTemplate`, which handles connection borrowing and returning automatically. It maps SQL result sets to a strongly-typed Java `record` (the Model) via a custom `RowMapper`.
+    * **API Contract Preservation:** Despite the language change, the API interface remains strictly identical. It explicitly enforces snake_case JSON serialization (`spring.jackson.property-naming-strategy=SNAKE_CASE`) to match Python's default dictionary output, meaning client applications wouldn't notice the backend swap.
+* **Tech Stack & Dependencies:**
+    * **Language:** Java 17 (leveraging immutable `record` types).
+    * **Build Tool:** Maven.
+    * **Web Framework:** Spring Boot 3.2.5 (with embedded Tomcat via `spring-boot-starter-web`).
+    * **Database Driver & Pool:** `mysql-connector-j` combined with HikariCP (provided by `spring-boot-starter-jdbc`).
+    * **JSON Serializer:** Jackson (integrated into Spring Boot).
+* **Security & Performance:**
+    * **Security (SQL Injection):** Maintains safety against SQL injection by using Spring's parameterized queries (`?` placeholders) and dynamically building the `WHERE` clause safely in the `/shows/filter` endpoint.
+    * **Performance (Query Optimization):** Introduces a major upgrade to the `/shows/search` endpoint. Instead of defaulting to a slow `LIKE %q%` full-table scan, it first attempts a highly optimized Full-Text index search (`MATCH() AGAINST()`). It only falls back to the `LIKE` operator if the Full-Text search yields no results.
+    * **Performance (Connection Pooling):** Switched to HikariCP (known for being extremely fast) and quadrupled the maximum connection pool size from 5 to 20, while maintaining 10 minimum idle connections to prevent cold-start penalties.
+* **Scalability:**
+    * **Current Limits:** Scalability is drastically improved compared to V1. By utilizing Spring Boot's embedded Tomcat server, the application is inherently multi-threaded out of the box (configured with up to 200 worker threads). 
+    * **Verdict:** This version is fully capable of handling significant concurrent loads (like 100+ Virtual Users) without bottlenecking, as the 200 Tomcat threads efficiently share the 20 HikariCP database connections.

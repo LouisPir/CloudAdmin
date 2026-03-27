@@ -1,0 +1,154 @@
+IMPORTANT FOR PRESENTATION GENERATION:
+
+This document describes an iterative performance optimization project.
+The key objective is to explain how bottlenecks evolved across versions.
+
+When generating a presentation, prioritize:
+
+1. Clear narrative:
+   - For each version: What was the bottleneck → Why → What fix → What result
+
+2. Focus on major improvements only:
+   - Avoid low-level implementation details unless they directly explain performance
+
+3. Emphasize bottleneck transitions:
+   - V1/V2: database scans and connection limits
+   - V3: database solved → network latency (Redis) becomes bottleneck
+   - V4: database optimized (indexes, projection)
+   - V4 vs V4-bis: trade-off between distributed cache vs local cache
+
+4. The climax of the presentation is:
+   - The A/B test between V4 (hybrid cache) and V4-bis (pure local cache)
+   - This must be clearly highlighted as a trade-off:
+     scalability vs maximum performance
+
+5. Keep explanations simple and speakable.
+   Avoid overly technical jargon unless necessary.
+
+
+### **Version 1 (Baseline): Technical Details**
+
+* **Architectural Shifts (Baseline State):**
+    * **Design Pattern:** Modular REST API using Flask Blueprints (routes grouped under the `/netflix` prefix). 
+    * **Data Access Layer:** Dedicated database module (`db.py`) handling connection logic, completely decoupled from the routing logic.
+    * **Query Strategy:** Bypasses Object-Relational Mapping (ORM) entirely, relying strictly on Raw SQL strings constructed within the route handlers.
+* **Tech Stack & Dependencies:**
+    * [cite_start]**Web Framework:** Flask version 3.1.1[cite: 1].
+    * [cite_start]**Database Driver:** `mysql-connector-python` version 9.3.0[cite: 1].
+    * **Database:** MySQL (Local instance expected on port 3306).
+* **Security & Performance:**
+    * **Security (SQL Injection):** Safely handles user input by using strictly parameterized queries (`%s` placeholders) across all search and filter endpoints.
+    * **Performance (Connection Pooling):** Implements `MySQLConnectionPool` with a pool size of 5, preventing the overhead of opening/closing a TCP connection on every single API request.
+    * **Performance (Data Transfer):** Enforces default pagination (LIMIT and OFFSET set to 20) on high-volume endpoints (`/shows`, `/shows/search`, `/shows/filter`) to prevent memory overload.
+    * **Data Serialization:** Utilizes MySQL dictionary cursors (`dictionary=True`) to fetch rows as Python dictionaries, allowing for immediate, low-overhead JSON serialization.
+* **Scalability (Baseline State):**
+    * **Current Limits:** The app is configured to run on the built-in Flask development server (`app.run()`), which is strictly single-threaded and synchronous. The database connection pool is small (size 5) and hardcoded to `localhost`.
+    * **Verdict:** This is a solid, optimized local development baseline, but it would bottleneck immediately under production traffic without a production WSGI server (like Gunicorn) and externalized configuration (like environment variables).
+
+Thanks for catching that! The `pom.xml` provides some crucial exact versioning and build tool context. 
+
+I have updated the Tech Stack section below to explicitly include **Java 17**, **Spring Boot 3.2.5**, and **Maven** based on your POM file. The rest of the architectural analysis remains rock solid because the POM confirms exactly the behavior we saw in the Java classes (specifically the web and JDBC starters).
+
+
+### **Version 2 (Java/Spring Boot Rewrite): Technical Details**
+
+* **Architectural Shifts:**
+    * **Language & Paradigm Shift:** Migrated completely from Python to Java, adopting an N-tier, object-oriented architecture (Controller-Model-Repository pattern).
+    * **Data Access Layer:** Replaced manual cursor management with Spring's `JdbcTemplate`, which handles connection borrowing and returning automatically. It maps SQL result sets to a strongly-typed Java `record` (the Model) via a custom `RowMapper`.
+    * **API Contract Preservation:** Despite the language change, the API interface remains strictly identical. It explicitly enforces snake_case JSON serialization (`spring.jackson.property-naming-strategy=SNAKE_CASE`) to match Python's default dictionary output, meaning client applications wouldn't notice the backend swap.
+* **Tech Stack & Dependencies:**
+    * **Language:** Java 17 (leveraging immutable `record` types).
+    * **Build Tool:** Maven.
+    * **Web Framework:** Spring Boot 3.2.5 (with embedded Tomcat via `spring-boot-starter-web`).
+    * **Database Driver & Pool:** `mysql-connector-j` combined with HikariCP (provided by `spring-boot-starter-jdbc`).
+    * **JSON Serializer:** Jackson (integrated into Spring Boot).
+* **Security & Performance:**
+    * **Security (SQL Injection):** Maintains safety against SQL injection by using Spring's parameterized queries (`?` placeholders) and dynamically building the `WHERE` clause safely in the `/shows/filter` endpoint.
+    * **Performance (Query Optimization):** Introduces a major upgrade to the `/shows/search` endpoint. Instead of defaulting to a slow `LIKE %q%` full-table scan, it first attempts a highly optimized Full-Text index search (`MATCH() AGAINST()`). It only falls back to the `LIKE` operator if the Full-Text search yields no results.
+    * **Performance (Connection Pooling):** Switched to HikariCP (known for being extremely fast) and quadrupled the maximum connection pool size from 5 to 20, while maintaining 10 minimum idle connections to prevent cold-start penalties.
+* **Scalability:**
+    * **Current Limits:** Scalability is drastically improved compared to V1. By utilizing Spring Boot's embedded Tomcat server, the application is inherently multi-threaded out of the box (configured with up to 200 worker threads). 
+    * **Verdict:** This version is fully capable of handling significant concurrent loads (like 100+ Virtual Users) without bottlenecking, as the 200 Tomcat threads efficiently share the 20 HikariCP database connections.
+
+
+### **Version 3 (Redis Caching Layer): Technical Details**
+
+* **Architectural Shifts:**
+    * **Cache-Aside Pattern:** Introduced a dedicated `CacheService` that acts as a middleware between the Controller and the Repository. The application first checks the cache; on a "miss," it queries the database, caches the result, and returns it.
+    * **Targeted Implementation:** Caching is strategically applied *only* to heavy, parameter-less (or low-variance) aggregation endpoints (e.g., `top-directors`, `stats/yearly`). Dynamic, high-variance endpoints (like paginated lists or arbitrary searches) bypass the cache entirely to prevent memory bloating.
+    * **Graceful Degradation:** The architecture is designed to be resilient. If the Redis server crashes or timeouts, the `CacheService` catches the exception, logs a warning, and falls back to querying MySQL directly. The API remains functional, just slower.
+    * **Observability:** Added custom endpoints (`/netflix/cache/stats` and `/cache/reset`) using thread-safe `AtomicLong` counters to monitor cache hits, misses, and overall hit rate during load testing.
+* **Tech Stack & Dependencies:**
+    * **New Dependency:** Added `spring-boot-starter-data-redis` to the Maven POM.
+    * **Data Store:** Requires a Redis instance (configured for `localhost:6379`).
+    * **Serialization:** Configured `RedisTemplate` to serialize cache values as plain JSON (`GenericJackson2JsonRedisSerializer`) rather than Java binaries, allowing administrators to manually inspect the cache using standard Redis CLI tools.
+* **Security & Performance:**
+    * **Performance (Query Offloading):** Massive reduction in database CPU load. Expensive full-table `GROUP BY` SQL operations are executed only once per minute per endpoint. The subsequent 99+ requests within that window are served in O(1) time directly from Redis memory.
+    * **Data Consistency Trade-off:** Implements a strict Time-To-Live (TTL) of 60 seconds. The architectural trade-off here is accepting up to 60 seconds of "stale" data in exchange for massive throughput gains—a highly appropriate trade-off for a Netflix catalog that rarely changes by the second.
+* **Scalability:**
+    * **Current Limits:** By removing the heavy aggregation queries from MySQL's plate, the 20 HikariCP database connections are now entirely freed up to handle the dynamic, user-specific searches and filters. This drastically raises the ceiling for concurrent Virtual Users before the database bottlenecks.
+
+
+### Version 4 — Hybrid Cache (Redis + Local)
+
+Architectural Shifts:
+
+Query Strategy Overhaul: Replaced all LIKE '%term%' wildcard filters with exact-match (=) equality checks on category, country, rating, and genre. We stopped scanning the entire table and started jumping directly to the rows we need using B-Tree index lookups, allowing MySQL's optimizer to perform direct key seeks instead of reading every row.
+Column Projection: The /shows list endpoint no longer uses SELECT *. A dedicated lightweight query and RowMapper exclude the two largest text columns (description and cast), reducing per-row I/O, heap allocation, and JSON serialization volume by an estimated 60–70%. Detail endpoints (/shows/{id}, /shows/search, /shows/filter) retain the full SELECT * since consumers need the complete record.
+Hybrid Caching Model: Extended the caching architecture with a second, JVM-local layer. Aggregation endpoints remain cached in Redis (via the existing CacheService), but the paginated list endpoint uses an in-process ConcurrentHashMap with a 10-second TTL. This is a deliberate architectural choice: Redis round-trips cost ~10ms (visible in V4 aggregation p50s), which would negate most of the benefit for a query that only takes ~14ms to execute. The local cache delivers sub-2ms responses. The countAll() method receives the same local cache treatment, eliminating a recurring SELECT COUNT(*) full-table scan.
+Schema Evolution: Five new B-Tree indexes (idx_category, idx_country, idx_rating, idx_genre, idx_release_year) complement the existing FULLTEXT index on title, ensuring every filterable field has an indexed access path.
+
+
+Tech Stack & Dependencies:
+
+New Dependency: Added commons-pool2 to the Maven POM. Without this library on the classpath, Spring Data Redis's Lettuce driver silently falls back to a single shared connection, ignoring all pool configuration properties. The version is managed by the Spring Boot BOM.
+Dual RowMapper Pattern: Two static RowMapper<Show> instances coexist — SHOW_MAPPER (full 12-column extraction for detail views) and LIST_MAPPER (10-column extraction with null for cast and description). This avoids conditional column selection at runtime and keeps both query paths allocation-optimal.
+Cache Entry Type Safety: List cache entries use a Java record (CachedList) that pairs the result set with an expiration timestamp, providing compile-time guarantees over the raw Map.Entry pattern.
+
+
+Security & Performance:
+
+Performance (Connection Pool Scaling): HikariCP maximum-pool-size increased from 20 → 80 (with minimum-idle at 40) to eliminate connection pool starvation. At pool size 20, Tomcat worker threads spent more time queuing for a database connection than executing queries. Lettuce Redis connection pooling is also enabled (max-active=80) to prevent the same bottleneck on the cache side.
+Performance (Database Pressure Reduction): The paginated list cache reduces MySQL hits for /shows from ~470 queries/sec to ~0.5 queries/sec (one cache miss per page per 10-second TTL window). Combined with column projection on those rare cache misses, this eliminates the endpoint as a source of buffer pool contention — the root cause of 1,500ms+ tail spikes observed in pre-fix V4.
+Performance (Tail Latency Collapse): List shows p99 is expected to drop from ~850ms to the ~20ms range — roughly a 40x reduction. The spikes were not caused by slow query execution but by I/O contention: 80 concurrent connections all issuing the heaviest query (SELECT * with large text blobs across 20 rows) thrashed the buffer pool. Caching removed the concurrency, and column projection reduced the cost of surviving cache-miss queries.
+Performance (Index-Backed Filtering): Exact-match filters leverage single-column B-Tree indexes, allowing direct key lookups instead of full-table scans. Filter p50 improved from 68ms (V3) to ~13ms (V4), with p99 dropping from 209ms to ~105ms.
+
+
+Scalability:
+
+Horizontal Scaling Consideration: The hybrid cache model creates two consistency profiles. Redis-cached aggregations remain shared across all nodes behind a load balancer — one node's cache miss populates the value for every node. The local list cache is per-node, meaning each instance maintains its own copy. Since the list data is identical across nodes (it's a deterministic paginated query over a shared database), this duplication has no correctness impact, only a marginal increase in cache-miss rate proportional to the number of nodes.
+Observed Trade-off: Higher throughput increases concurrency pressure on the remaining uncached endpoints (/shows/{id}, /shows/search, /shows/filter). Their individual latencies rise as VUs cycle faster and fire more queries per second. This is a net positive: the system performs significantly more total work, and the per-request latency increase reflects denser MySQL utilization rather than degradation.
+Remaining Bottleneck: The /shows/filter endpoint is now the primary tail-latency contributor. Multi-column composite indexes (e.g., (category, country), (category, genre), (country, rating)) would allow MySQL to satisfy the most common filter combinations with a single index scan instead of selecting one single-column index and row-filtering the rest.
+Verdict: This version combines Redis for shared aggregation caching with JVM-local caching for high-frequency list queries, index-backed filtering, and column projection to minimize per-query cost. The result is a system that eliminates unnecessary database work at every layer — fewer queries reach MySQL, and the queries that do are lighter and index-optimized.
+
+
+### Version 4-bis — Pure Local Cache (No Redis)
+
+Architectural Shifts:
+
+Query Strategy Overhaul: Replaced all LIKE '%term%' wildcard filters with exact-match (=) equality checks on category, country, rating, and genre. We stopped scanning the entire table and started jumping directly to the rows we need using indexes.
+Column Projection: The /shows list endpoint no longer uses SELECT *. A dedicated lightweight query excludes the two largest text columns (description and cast), reducing per-row I/O, memory allocation, and JSON serialization volume by an estimated 60–70%.
+Tiered Caching Model: Extended the existing ConcurrentHashMap cache (used for aggregation endpoints in V3-bis) to also cover the paginated list endpoint. The list cache uses a shorter TTL (10s vs 60s for aggregations) to reflect higher data sensitivity, while countAll() is similarly cached to eliminate a recurring SELECT COUNT(*) full-table scan.
+Schema Evolution: Five new B-Tree indexes (idx_category, idx_country, idx_rating, idx_genre, idx_release_year) complement the existing FULLTEXT index on title, ensuring every filterable field is indexed.
+
+
+Tech Stack & Dependencies:
+
+No New Dependencies: All optimizations are achieved through SQL changes, JVM-local caching primitives (ConcurrentHashMap, volatile), and a Java record (CachedList) for type-safe cache entries. The dependency footprint remains identical to V3-bis.
+Dual RowMapper Pattern: Two static RowMapper<Show> instances coexist — SHOW_MAPPER (full 12-column extraction for detail views) and LIST_MAPPER (10-column extraction with null for cast and description for list views). This avoids the overhead of conditional column selection at runtime.
+
+
+Security & Performance:
+
+Performance (Connection Pool Scaling): HikariCP maximum-pool-size increased from 20 → 80 (with minimum-idle at 40) to eliminate connection pool starvation under 100 concurrent virtual users. At pool size 20, threads spent more time queuing for a connection than executing queries.
+Performance (Database Pressure Reduction): The paginated list cache reduces MySQL hits for /shows from ~470 queries/sec to ~0.5 queries/sec (one per page per TTL window). Combined with column projection on cache misses, this eliminates the endpoint as a source of buffer pool contention.
+Performance (Index-Backed Filtering): Exact-match filters leverage single-column B-Tree indexes, allowing MySQL's optimizer to perform direct key lookups instead of scanning every row. Filter p50 latency improved from 68ms (V3-bis) to 17ms (V4-bis pre-list-fix), with p99 dropping from 209ms to 139ms.
+Performance (Tail Latency Collapse): List shows p99 dropped from 1,594ms to 21ms — a 76x reduction. The root cause was not query execution time but contention: 80 concurrent connections all issuing the heaviest query (SELECT * across 20 rows with large text fields) created I/O and buffer pool thrashing. Caching removed the concurrency, and column projection reduced the cost of the remaining cache-miss queries.
+
+
+Scalability:
+
+Throughput Gains: 4,814 req/s at 100 VUs — a 106% improvement over V3-bis (2,337 req/s) and a 27% improvement over V4-bis before the list optimization (3,784 req/s), with zero errors across 578,264 requests.
+Observed Trade-off: The throughput increase raised concurrency pressure on the uncached endpoints (/shows/{id}, /shows/search, /shows/filter), increasing their individual latencies (e.g., Single show p50 rose from 5ms to 10ms). This is a net positive: the system performs 27% more total work, and the higher per-request latency reflects denser utilization of MySQL resources rather than degradation.
+Remaining Bottleneck: The /shows/filter endpoint (p50: 81ms, p99: 367ms) is now the primary tail-latency contributor. Multi-column composite indexes (e.g., (category, country), (category, genre)) would allow MySQL to satisfy common filter combinations with a single index scan instead of picking one single-column index and row-filtering the rest.
+Verdict: This version pushes single-node throughput to nearly 5,000 req/s by systematically reducing unnecessary database work — fewer columns per query, fewer queries per second, and index-backed access paths for every filtered field.

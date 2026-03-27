@@ -1,0 +1,30 @@
+Version 4-bis (Index Optimization & Query Tuning): Technical Details
+
+Architectural Shifts:
+
+Query Strategy Overhaul: Replaced all LIKE '%term%' wildcard filters with exact-match (=) equality checks on category, country, rating, and genre. This shifts the filter endpoint from O(N) full-table scans to O(log N) B-Tree index lookups.
+Column Projection: The /shows list endpoint no longer uses SELECT *. A dedicated lightweight query excludes the two largest text columns (description and cast), reducing per-row I/O, memory allocation, and JSON serialization volume by an estimated 60–70%.
+Tiered Caching Model: Extended the existing ConcurrentHashMap cache (used for aggregation endpoints in V3-bis) to also cover the paginated list endpoint. The list cache uses a shorter TTL (10s vs 60s for aggregations) to reflect higher data sensitivity, while countAll() is similarly cached to eliminate a recurring SELECT COUNT(*) full-table scan.
+Schema Evolution: Five new B-Tree indexes (idx_category, idx_country, idx_rating, idx_genre, idx_release_year) complement the existing FULLTEXT index on title, ensuring every filterable field is indexed.
+
+
+Tech Stack & Dependencies:
+
+No New Dependencies: All optimizations are achieved through SQL changes, JVM-local caching primitives (ConcurrentHashMap, volatile), and a Java record (CachedList) for type-safe cache entries. The dependency footprint remains identical to V3-bis.
+Dual RowMapper Pattern: Two static RowMapper<Show> instances coexist — SHOW_MAPPER (full 12-column extraction for detail views) and LIST_MAPPER (10-column extraction with null for cast and description for list views). This avoids the overhead of conditional column selection at runtime.
+
+
+Security & Performance:
+
+Performance (Connection Pool Scaling): HikariCP maximum-pool-size increased from 20 → 80 (with minimum-idle at 40) to eliminate connection pool starvation under 100 concurrent virtual users. At pool size 20, threads spent more time queuing for a connection than executing queries.
+Performance (Database Pressure Reduction): The paginated list cache reduces MySQL hits for /shows from ~470 queries/sec to ~0.5 queries/sec (one per page per TTL window). Combined with column projection on cache misses, this eliminates the endpoint as a source of buffer pool contention.
+Performance (Index-Backed Filtering): Exact-match filters leverage single-column B-Tree indexes, allowing MySQL's optimizer to perform direct key lookups instead of scanning every row. Filter p50 latency improved from 68ms (V3-bis) to 17ms (V4-bis pre-list-fix), with p99 dropping from 209ms to 139ms.
+Performance (Tail Latency Collapse): List shows p99 dropped from 1,594ms to 21ms — a 76x reduction. The root cause was not query execution time but contention: 80 concurrent connections all issuing the heaviest query (SELECT * across 20 rows with large text fields) created I/O and buffer pool thrashing. Caching removed the concurrency, and column projection reduced the cost of the remaining cache-miss queries.
+
+
+Scalability:
+
+Throughput Gains: 4,814 req/s at 100 VUs — a 106% improvement over V3-bis (2,337 req/s) and a 27% improvement over V4-bis before the list optimization (3,784 req/s), with zero errors across 578,264 requests.
+Observed Trade-off: The throughput increase raised concurrency pressure on the uncached endpoints (/shows/{id}, /shows/search, /shows/filter), increasing their individual latencies (e.g., Single show p50 rose from 5ms to 10ms). This is a net positive: the system performs 27% more total work, and the higher per-request latency reflects denser utilization of MySQL resources rather than degradation.
+Remaining Bottleneck: The /shows/filter endpoint (p50: 81ms, p99: 367ms) is now the primary tail-latency contributor. Multi-column composite indexes (e.g., (category, country), (category, genre)) would allow MySQL to satisfy common filter combinations with a single index scan instead of picking one single-column index and row-filtering the rest.
+Verdict: This version pushes single-node throughput to nearly 5,000 req/s by systematically reducing unnecessary database work — fewer columns per query, fewer queries per second, and index-backed access paths for every filtered field.

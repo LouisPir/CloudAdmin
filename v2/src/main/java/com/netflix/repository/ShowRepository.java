@@ -167,6 +167,6 @@ public class ShowRepository {
             GROUP BY YEAR(date_added)
             ORDER BY year
             """
-        );
+        ); 
     }
 }

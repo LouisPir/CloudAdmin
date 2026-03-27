@@ -1,0 +1,16 @@
+### **Version 3 (Redis Caching Layer): Technical Details**
+
+* **Architectural Shifts:**
+    * **Cache-Aside Pattern:** Introduced a dedicated `CacheService` that acts as a middleware between the Controller and the Repository. The application first checks the cache; on a "miss," it queries the database, caches the result, and returns it.
+    * **Targeted Implementation:** Caching is strategically applied *only* to heavy, parameter-less (or low-variance) aggregation endpoints (e.g., `top-directors`, `stats/yearly`). Dynamic, high-variance endpoints (like paginated lists or arbitrary searches) bypass the cache entirely to prevent memory bloating.
+    * **Graceful Degradation:** The architecture is designed to be resilient. If the Redis server crashes or timeouts, the `CacheService` catches the exception, logs a warning, and falls back to querying MySQL directly. The API remains functional, just slower.
+    * **Observability:** Added custom endpoints (`/netflix/cache/stats` and `/cache/reset`) using thread-safe `AtomicLong` counters to monitor cache hits, misses, and overall hit rate during load testing.
+* **Tech Stack & Dependencies:**
+    * **New Dependency:** Added `spring-boot-starter-data-redis` to the Maven POM.
+    * **Data Store:** Requires a Redis instance (configured for `localhost:6379`).
+    * **Serialization:** Configured `RedisTemplate` to serialize cache values as plain JSON (`GenericJackson2JsonRedisSerializer`) rather than Java binaries, allowing administrators to manually inspect the cache using standard Redis CLI tools.
+* **Security & Performance:**
+    * **Performance (Query Offloading):** Massive reduction in database CPU load. Expensive full-table `GROUP BY` SQL operations are executed only once per minute per endpoint. The subsequent 99+ requests within that window are served in O(1) time directly from Redis memory.
+    * **Data Consistency Trade-off:** Implements a strict Time-To-Live (TTL) of 60 seconds. The architectural trade-off here is accepting up to 60 seconds of "stale" data in exchange for massive throughput gains—a highly appropriate trade-off for a Netflix catalog that rarely changes by the second.
+* **Scalability:**
+    * **Current Limits:** By removing the heavy aggregation queries from MySQL's plate, the 20 HikariCP database connections are now entirely freed up to handle the dynamic, user-specific searches and filters. This drastically raises the ceiling for concurrent Virtual Users before the database bottlenecks.

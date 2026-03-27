@@ -49,3 +49,9 @@ ALTER TABLE netflix ADD FULLTEXT INDEX idx_title_ft(title);
 -- Composite index for common filter combos (category + country, category + rating)
 CREATE INDEX idx_category_country ON netflix(category, country);
 CREATE INDEX idx_category_rating ON netflix(category, rating);
+
+CREATE INDEX idx_cat_rating_year ON netflix(category, rating, release_year);
+CREATE INDEX idx_country ON netflix(country(50));
+
+SHOW INDEX FROM netflix WHERE Index_type = 'FULLTEXT';
+CREATE FULLTEXT INDEX idx_title_ft ON netflix(title);

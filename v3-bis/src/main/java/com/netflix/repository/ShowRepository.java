@@ -10,7 +10,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-// Same as V2
 @Repository
 public class ShowRepository {
 
@@ -61,6 +60,8 @@ public class ShowRepository {
     }
 
     // ── Search by title ──────────────────────────────────────────
+    // MATCH(title) AGAINST('term') with the FULLTEXT index
+    // Fallback to LIKE if FULLTEXT returns nothing (handles partial matches)
     public List<Show> searchByTitle(String query, int limit, int offset) {
         // Try FULLTEXT first (uses the idx_title_ft index)
         List<Show> results = jdbc.query(
@@ -79,7 +80,7 @@ public class ShowRepository {
         return results;
     }
 
-    // ── Filter (dynamic WHERE clause) ────────────────────────── 
+    // ── Filter (dynamic WHERE clause, same logic as V1) ──────────
     public List<Show> filter(String category, String country, String rating,
                              String genre, Integer releaseYear,
                              int limit, int offset) {

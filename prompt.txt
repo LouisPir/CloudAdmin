@@ -1,0 +1,212 @@
+**Role:**
+Act as a **Senior Software Architect, Performance Engineer, and Expert Presentation Coach**. Your goal is to help me deliver a **top-grade 15-minute oral defense** for a Master’s-level Cloud Administration project.
+
+---
+
+## 🎯 Context (Read Carefully)
+
+This is a **15-minute oral defense with NO written report**. I will be graded strictly on:
+
+1. **System Design & Trade-offs**
+2. **Performance Evidence (k6 load testing: throughput, p50/p95/p99)**
+3. **Problem Framing & Analysis (explaining WHY performance changed)**
+
+The jury is technical and expects **clear reasoning, not just implementation details**.
+
+---
+
+## 🧩 Project Summary
+
+* Dataset: Netflix catalog
+* API: REST service exposing filtering, search, and aggregation queries
+* Load Testing: k6 with **100 virtual users**
+* Goal: Iteratively improve performance under load and explain bottlenecks
+
+---
+
+## 🎭 Narrative Arc (CRITICAL — BUILD A STORY)
+
+Structure the presentation as a **3-act performance engineering story**:
+
+### **Act 1 — Baseline Bottlenecks (V1 & V2)**
+
+* Python → Spring Boot migration
+* Problems:
+
+  * Full table scans (`LIKE %term%`)
+  * Connection limits
+* Result: System collapses under load
+
+---
+
+### **Act 2 — Distributed Bottleneck (V3)**
+
+* Introduced Redis cache (cache-aside)
+* Result:
+
+  * DB load drops significantly
+  * BUT new bottleneck appears: **network latency (~6–10ms per Redis call)**
+  * Throughput capped (~2,337 req/s)
+
+👉 Key insight: *Fixing one bottleneck revealed another*
+
+---
+
+### **Act 3 — The Ultimate Trade-off (V4 vs V4-bis)**
+
+#### Improvements:
+
+* Replaced `LIKE` with exact-match filters → index usage
+* Added B-Tree indexes + FULLTEXT index
+* Column projection (removed large fields from list queries)
+* Increased HikariCP pool (20 → 80)
+
+#### A/B Test:
+
+* **V4 (Hybrid Cache)**
+  Redis (aggregations) + Local cache (list endpoint)
+  → ~4,576 req/s
+  → scalable, distributed, slightly slower
+
+* **V4-bis (Pure Local Cache)**
+  All caches in-memory (no Redis)
+  → ~4,814 req/s
+  → maximum performance, NOT horizontally scalable
+
+👉 This is the **final design trade-off**
+
+---
+
+## 📂 Inputs You Will Receive
+
+* Technical write-ups for each version (Version_Writeups.txt)
+* k6 JSON performance metrics (loadtest.zip)
+
+---
+
+## 🚨 Your Task (STRICT REQUIREMENTS)
+
+Generate a **complete 15-minute presentation guide** that is:
+
+* concise
+* structured
+* easy to speak (not dense paragraphs)
+* aligned with grading rubric
+
+---
+
+# 📊 1. Slide-by-Slide Outline (MAX 8 Slides)
+
+For EACH slide, provide:
+
+### Slide Title
+
+### Visual Suggestion (VERY IMPORTANT)
+
+Be specific:
+
+* “line chart: throughput vs versions”
+* “diagram: request flow with cache layers”
+
+### Talking Points (WHAT I SAY)
+
+* bullet points
+* short, speakable sentences
+* NOT paragraphs
+* include transitions between slides
+
+⚠️ Must include:
+
+* 1 architecture diagram slide
+* 1 workload explanation slide
+* strong **before/after performance slides**
+* final **V4 vs V4-bis comparison slide (CLIMAX)**
+
+---
+
+# 🧱 2. Architecture Diagram Layout (VERY DETAILED)
+
+Explain EXACTLY how to draw the final system diagram:
+
+Include:
+
+* Client → Load → API (Spring Boot / Tomcat threads)
+* Local cache (in-memory)
+* Redis (only for V4)
+* MySQL database
+* Show:
+
+  * connection pools
+  * cache paths (hit vs miss)
+  * index usage (label it simply)
+
+Make it:
+
+* clean
+* minimal
+* presentation-friendly
+
+---
+
+# ⚖️ 3. Trade-off Cheat Sheet (CRITICAL FOR Q&A)
+
+Create a **simple, memorable table** covering:
+
+* Redis vs Local Cache
+* Indexing vs flexibility
+* Large connection pool vs DB pressure
+* Column projection vs completeness
+
+For each:
+
+* Benefit
+* Trade-off
+* When it’s the right choice
+
+---
+
+# 🎤 4. Mock Q&A (HIGH DIFFICULTY)
+
+Provide 3–5 challenging questions a professor might ask, such as:
+
+* “Why not keep Redis if it improves scalability?”
+* “What happens under multi-node deployment?”
+* “Is increasing connection pool always good?”
+
+For each:
+
+* Give a **clear, concise, confident answer**
+* Focus on reasoning, not jargon
+
+---
+
+# ⏱️ 5. Timing Guidance (IMPORTANT)
+
+Ensure total presentation fits **15 minutes**:
+
+* Give time estimate per slide
+* Ensure pacing is realistic
+
+---
+
+# 🧠 Style Constraints
+
+* Prioritize **clarity over technical jargon**
+* Avoid overly theoretical explanations
+* Focus on:
+
+  * bottlenecks
+  * cause → fix → result
+* Make it sound like a **story of discovery**
+
+---
+
+# 🏁 Final Goal
+
+The presentation should make the jury think:
+
+> “This student understands how performance bottlenecks move through a system and can justify real-world trade-offs.”
+
+---
+
+Generate the full presentation guide now.

@@ -1,0 +1,18 @@
+### **Version 1 (Baseline): Technical Details**
+
+* **Architectural Shifts (Baseline State):**
+    * **Design Pattern:** Modular REST API using Flask Blueprints (routes grouped under the `/netflix` prefix). 
+    * **Data Access Layer:** Dedicated database module (`db.py`) handling connection logic, completely decoupled from the routing logic.
+    * **Query Strategy:** Bypasses Object-Relational Mapping (ORM) entirely, relying strictly on Raw SQL strings constructed within the route handlers.
+* **Tech Stack & Dependencies:**
+    * [cite_start]**Web Framework:** Flask version 3.1.1[cite: 1].
+    * [cite_start]**Database Driver:** `mysql-connector-python` version 9.3.0[cite: 1].
+    * **Database:** MySQL (Local instance expected on port 3306).
+* **Security & Performance:**
+    * **Security (SQL Injection):** Safely handles user input by using strictly parameterized queries (`%s` placeholders) across all search and filter endpoints.
+    * **Performance (Connection Pooling):** Implements `MySQLConnectionPool` with a pool size of 5, preventing the overhead of opening/closing a TCP connection on every single API request.
+    * **Performance (Data Transfer):** Enforces default pagination (LIMIT and OFFSET set to 20) on high-volume endpoints (`/shows`, `/shows/search`, `/shows/filter`) to prevent memory overload.
+    * **Data Serialization:** Utilizes MySQL dictionary cursors (`dictionary=True`) to fetch rows as Python dictionaries, allowing for immediate, low-overhead JSON serialization.
+* **Scalability (Baseline State):**
+    * **Current Limits:** The app is configured to run on the built-in Flask development server (`app.run()`), which is strictly single-threaded and synchronous. The database connection pool is small (size 5) and hardcoded to `localhost`.
+    * **Verdict:** This is a solid, optimized local development baseline, but it would bottleneck immediately under production traffic without a production WSGI server (like Gunicorn) and externalized configuration (like environment variables).
